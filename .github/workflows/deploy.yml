@@ -1,0 +1,229 @@
+# ===================================================================
+# .github/workflows/deploy.yml
+#
+# C'est le robot qui fait le déploiement à ta place 🤖
+# À chaque fois que tu fais "git push" sur la branche main,
+# GitHub lit ce fichier et exécute tout ce qui est dedans
+#
+# C'est comme si t'avais un stagiaire qui :
+# 1. Lance les tests
+# 2. Build le React
+# 3. Upload sur S3
+# 4. Déploie la Lambda
+# ...à chaque fois que tu pousses du code
+# ===================================================================
+ 
+ 
+# Le nom du pipeline — affiché dans l'onglet Actions sur GitHub
+name: Deploy Portfolio
+ 
+ 
+# ===================================================================
+# DÉCLENCHEUR — quand est-ce que ce pipeline se lance ?
+# ===================================================================
+on:
+  push:
+    branches: [main]
+    # → se lance UNIQUEMENT quand tu push sur la branche "main"
+    # Si tu push sur une autre branche → rien ne se passe
+    # C'est une sécurité pour pas déployer du code pas fini
+ 
+ 
+# ===================================================================
+# VARIABLES GLOBALES — disponibles dans tout le fichier
+# C'est comme des constantes, pour pas répéter les mêmes valeurs
+# ===================================================================
+env:
+  AWS_REGION: eu-west-3                      # Paris
+  S3_BUCKET: portfolio-elyas-frontend        # le bucket qui stocke le React
+  CLOUDFRONT_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
+  # ${{ secrets.X }} = va lire le secret X dans les paramètres GitHub
+  # c'est comme process.env en Node.js mais pour GitHub Actions
+ 
+ 
+# ===================================================================
+# LES JOBS — les tâches à exécuter
+# Chaque job tourne dans une machine virtuelle séparée sur les serveurs GitHub
+# C'est comme des ouvriers différents qui travaillent en parallèle
+# ===================================================================
+jobs:
+ 
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 1 : TESTS
+  # On vérifie que le code est pas cassé avant de déployer
+  # Si les tests ratent → on déploie pas → on évite de mettre un site cassé en prod
+  # ─────────────────────────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    # runs-on = sur quel type de machine GitHub va faire tourner ce job
+    # ubuntu-latest = une machine Linux fraîche à chaque fois
+ 
+    steps:
+    # Les "steps" c'est les étapes dans l'ordre, comme une recette de cuisine
+ 
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+        # "uses" = utilise une action prête à l'emploi faite par quelqu'un d'autre
+        # actions/checkout = télécharge ton code depuis GitHub sur la machine virtuelle
+        # Sans ça la machine virtuelle a aucun fichier, elle sait pas quoi faire
+ 
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+          # cache: 'npm' = mémorise node_modules pour aller plus vite la prochaine fois
+          # comme mettre en cache ses courses pour pas tout racheter
+ 
+      - name: Installer les dépendances frontend
+        run: cd frontend && npm ci
+        # "run" = exécute cette commande shell sur la machine virtuelle
+        # npm ci = comme npm install mais plus strict et plus rapide
+        # utilisé en CI/CD car il installe EXACTEMENT ce qui est dans package-lock.json
+ 
+      - name: Lancer les tests
+        run: cd frontend && npm test -- --watchAll=false --passWithNoTests
+        # --watchAll=false = lance les tests une seule fois et s'arrête
+        # (par défaut npm test tourne en mode "watch" et attend des changements)
+        # --passWithNoTests = si y'a pas de tests → pas d'erreur (on en a pas encore)
+ 
+      - name: Installer les dépendances backend
+        run: cd backend && npm ci
+ 
+ 
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 2 : DÉPLOIEMENT FRONTEND
+  # Build React + Upload sur S3 + Vider le cache CloudFront
+  # ─────────────────────────────────────────────────────────────────
+  deploy-frontend:
+    name: Deploy Frontend vers S3
+    runs-on: ubuntu-latest
+ 
+    needs: test
+    # needs: test = ce job attend que le job "test" soit fini et réussi
+    # Si les tests ratent → ce job se lance pas
+    # C'est comme dire "commence pas à livrer si la pizza est pas cuite"
+ 
+    if: github.ref == 'refs/heads/main'
+    # Sécurité supplémentaire : déploie UNIQUEMENT si on est sur main
+ 
+    steps:
+ 
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+ 
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+ 
+      - name: Installer les dépendances
+        run: cd frontend && npm ci
+ 
+      - name: Builder React
+        run: cd frontend && npm run build
+        # Compile le JSX en HTML/CSS/JS classique
+        # Crée le dossier frontend/build/ avec tous les fichiers prêts
+ 
+      - name: Se connecter à AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+        # Configure les credentials AWS sur la machine virtuelle
+        # Comme si tu faisais "aws configure" sur ton PC
+        # Utilise les secrets GitHub qu'on a configurés
+ 
+      - name: Envoyer le build sur S3
+        run: |
+          # On envoie tous les fichiers SAUF index.html
+          # avec un cache long (1 an) car leurs noms contiennent un hash
+          # ex: main.abc123.js → si le code change, le hash change → nouveau fichier
+          aws s3 sync frontend/build/ s3://${{ env.S3_BUCKET }}/ \
+            --delete \
+            --cache-control "public, max-age=31536000" \
+            --exclude "index.html"
+ 
+          # index.html lui on le cache PAS longtemps
+          # car c'est lui qui référence les autres fichiers
+          # si on le cache trop longtemps → le navigateur charge l'ancienne version
+          aws s3 cp frontend/build/index.html s3://${{ env.S3_BUCKET }}/index.html \
+            --cache-control "no-cache, no-store, must-revalidate"
+ 
+      - name: Vider le cache CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ env.CLOUDFRONT_ID }} \
+            --paths "/*"
+          # On dit à CloudFront "jette tes vieilles copies"
+          # pour qu'il serve les nouveaux fichiers depuis S3
+ 
+ 
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 3 : DÉPLOIEMENT BACKEND
+  # Zipper handler.js + Envoyer sur Lambda
+  # ─────────────────────────────────────────────────────────────────
+  deploy-backend:
+    name: Deploy Backend vers Lambda
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+ 
+    steps:
+ 
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+ 
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+ 
+      - name: Installer les dépendances backend
+        run: cd backend && npm ci --omit=dev
+        # --omit=dev = installe PAS les dépendances de développement
+        # on veut un zip le plus léger possible pour Lambda
+ 
+      - name: Zipper le backend
+        run: |
+          cd backend
+          zip -r function.zip src/ node_modules/ package.json
+          # On compresse tout dans un zip
+          # Lambda accepte que des zips, pas des dossiers directement
+          # C'est comme mettre ses affaires dans un carton avant de déménager
+ 
+      - name: Se connecter à AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+ 
+      - name: Envoyer le zip sur Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name portfolio-api \
+            --zip-file fileb://backend/function.zip
+          # fileb:// = "c'est un fichier binaire" (un zip)
+          # Lambda reçoit le zip, le dézippe, et handler.js est à jour ✅
+ 
+      - name: Attendre que Lambda soit prête
+        run: |
+          aws lambda wait function-updated \
+            --function-name portfolio-api
+          # Lambda prend quelques secondes pour se mettre à jour
+          # On attend qu'elle soit prête avant de continuer
+          # Comme attendre que le micro-ondes bipe avant de manger 😄
+ 
+      - name: Publier la nouvelle version
+        run: |
+          aws lambda publish-version \
+            --function-name portfolio-api
+          # Crée un "snapshot" de cette version de Lambda
+          # Utile pour revenir en arrière si y'a un bug
+          # Comme un point de sauvegarde dans un jeu vidéo 🎮
