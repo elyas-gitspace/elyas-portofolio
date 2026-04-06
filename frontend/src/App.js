@@ -226,7 +226,7 @@ function App() {
 
       {/* ── SECTION EXPÉRIENCES ── */}
       <section className="section" id="xp">
-        <div className="section-label">// expériences</div>
+      <div className="section-label">&#47;&#47; expériences</div>
         <h2 className="section-title">Parcours professionnel</h2>
 
         <div className="xp-grid">
@@ -274,7 +274,7 @@ function App() {
 
       {/* ── SECTION STACK TECHNIQUE ── */}
       <section className="section stack-section">
-        <div className="section-label">// stack technique</div>
+      <div className="section-label">&#47;&#47; stack technique</div>
         <h2 className="section-title">Technologies</h2>
 
         <div className="tech-grid">
@@ -289,7 +289,7 @@ function App() {
 
       {/* ── SECTION CONTACT ── */}
       <section className="section contact-section" id="contact">
-        <div className="section-label">// contact</div>
+      <div className="section-label">&#47;&#47; contact</div>
         <h2 className="section-title">Travaillons ensemble</h2>
 
         <p className="contact-text">
